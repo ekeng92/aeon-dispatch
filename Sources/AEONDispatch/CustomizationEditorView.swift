@@ -3,7 +3,7 @@ import SwiftUI
 struct CustomizationEditorView: View {
     @ObservedObject var manager: DispatchManager
     @ObservedObject var edit: CustomizationEditModel
-    @Environment(\.dismiss) private var dismiss
+    var onDismiss: () -> Void
 
     @State private var showDeleteConfirm = false
 
@@ -158,9 +158,11 @@ struct CustomizationEditorView: View {
 
                     Spacer()
 
-                    Button("Cancel") { dismiss() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                    Button(action: { onDismiss() }) {
+                        Text("Cancel")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
 
                     Button(action: save) {
                         Text(edit.isNew ? "Create" : "Save")
@@ -174,13 +176,13 @@ struct CustomizationEditorView: View {
                 .padding(16)
             }
         }
-        .frame(width: 380, height: 520)
+        .frame(width: 380, height: 640)
         .alert("Delete Customization?", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
                 if let cust = manager.customizations.first(where: { $0.fileName == edit.originalFileName }) {
                     manager.deleteCustomization(cust)
                 }
-                dismiss()
+                onDismiss()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -192,7 +194,7 @@ struct CustomizationEditorView: View {
 
     private func save() {
         manager.saveCustomization(edit)
-        dismiss()
+        onDismiss()
     }
 
     private func browseFile() {

@@ -3,7 +3,7 @@ import SwiftUI
 struct FlowEditorView: View {
     @ObservedObject var manager: DispatchManager
     @ObservedObject var edit: FlowEditModel
-    @Environment(\.dismiss) private var dismiss
+    var onDismiss: () -> Void
 
     @State private var showDeleteConfirm = false
     @State private var promptSource: PromptSource = .inline
@@ -276,9 +276,11 @@ struct FlowEditorView: View {
 
                     Spacer()
 
-                    Button("Cancel") { dismiss() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                    Button(action: { onDismiss() }) {
+                        Text("Cancel")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
 
                     Button(action: save) {
                         Text(edit.isNew ? "Create" : "Save")
@@ -301,7 +303,7 @@ struct FlowEditorView: View {
                 if let flow = manager.flows.first(where: { $0.fileName == edit.originalFileName }) {
                     manager.deleteFlow(flow)
                 }
-                dismiss()
+                onDismiss()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -313,7 +315,7 @@ struct FlowEditorView: View {
 
     private func save() {
         manager.saveFlow(edit)
-        dismiss()
+        onDismiss()
     }
 
     private func browseFile(for keyPath: ReferenceWritableKeyPath<FlowEditModel, String>) {

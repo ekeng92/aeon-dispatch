@@ -9,6 +9,11 @@ let package = Package(
         .executableTarget(
             name: "AEONDispatch",
             path: "Sources/AEONDispatch"
+        ),
+        .testTarget(
+            name: "AEONDispatchTests",
+            dependencies: ["AEONDispatch"],
+            path: "Tests/AEONDispatchTests"
         )
     ]
 )

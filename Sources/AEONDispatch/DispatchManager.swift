@@ -231,19 +231,6 @@ final class DispatchManager: ObservableObject {
     @Published private(set) var copilotAvailable = false
     @Published private(set) var runningFlows: Set<String> = []
     @Published private(set) var lastRunTimes: [String: String] = [:]
-    @Published private(set) var updateAvailable = false
-    @Published private(set) var updateChecking = false
-    @Published private(set) var updateInProgress = false
-    @Published private(set) var latestCommitMessage: String = ""
-
-    /// Bundled at build time. Set to "dev" for local builds, or a short SHA by CI/Makefile.
-    static let buildVersion: String = {
-        // Read from bundle's Info.plist CFBundleVersion, or fall back to "dev"
-        if let v = Bundle.main.infoDictionary?["CFBundleVersion"] as? String, v != "1" {
-            return v
-        }
-        return "dev"
-    }()
 
     // MARK: - Paths
 
@@ -281,16 +268,11 @@ final class DispatchManager: ObservableObject {
         loadRecentResults()
         checkDependencies()
         checkScheduler()
-        addLog("AEON Dispatch started (build: \(Self.buildVersion))")
+        addLog("AEON Dispatch started")
 
         startFileWatchers()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             self?.refresh()
-        }
-
-        // Check for updates after a short delay (don't block startup)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            self?.checkForUpdate()
         }
     }
 
@@ -347,16 +329,16 @@ final class DispatchManager: ObservableObject {
                 task.waitUntilExit()
 
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
+                let stderr = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let success = task.terminationStatus == 0
-                _ = output.split(separator: "\n").last.map(String.init) ?? ""
 
                 DispatchQueue.main.async {
                     self.runningFlows.remove(flow.fileName)
                     if success {
                         self.addLog("Done: \(flow.name)")
                     } else {
-                        self.addLog("Failed: \(flow.name) (exit \(task.terminationStatus))")
+                        let detail = stderr.isEmpty ? "" : " — \(stderr.prefix(200))"
+                        self.addLog("Failed: \(flow.name) (exit \(task.terminationStatus))\(detail)")
                     }
                     self.refresh()
                     self.sendNotification(
@@ -416,11 +398,7 @@ final class DispatchManager: ObservableObject {
     // MARK: - Customization CRUD
 
     func saveCustomization(_ edit: CustomizationEditModel) {
-        let fileName = edit.fileName.isEmpty
-            ? edit.name.lowercased()
-                .replacingOccurrences(of: " ", with: "-")
-                .replacingOccurrences(of: "[^a-z0-9\\-]", with: "", options: .regularExpression)
-            : edit.fileName
+        let fileName = edit.fileName.isEmpty ? slugify(edit.name) : edit.fileName
 
         var dict: [String: Any] = [
             "name": edit.name,
@@ -474,11 +452,7 @@ final class DispatchManager: ObservableObject {
     // MARK: - Flow CRUD
 
     func saveFlow(_ edit: FlowEditModel) {
-        let fileName = edit.fileName.isEmpty
-            ? edit.name.lowercased()
-                .replacingOccurrences(of: " ", with: "-")
-                .replacingOccurrences(of: "[^a-z0-9\\-]", with: "", options: .regularExpression)
-            : edit.fileName
+        let fileName = edit.fileName.isEmpty ? slugify(edit.name) : edit.fileName
 
         var scheduleDict: Any
         switch edit.scheduleType {
@@ -569,7 +543,9 @@ final class DispatchManager: ObservableObject {
                 let name = String(file.dropLast(5))
                 cust = cust.withFileName(name)
                 loaded.append(cust)
-            } catch { }
+            } catch {
+                addLog("Warning: could not parse customization '\(file)': \(error.localizedDescription)")
+            }
         }
         customizations = loaded
     }
@@ -593,7 +569,7 @@ final class DispatchManager: ObservableObject {
                 flow = flow.withFileName(name)
                 loaded.append(flow)
             } catch {
-                // Skip malformed flow files
+                addLog("Warning: could not parse flow '\(file)': \(error.localizedDescription)")
             }
         }
 
@@ -785,149 +761,16 @@ final class DispatchManager: ObservableObject {
     }
 
     private func sendNotification(title: String, message: String) {
-        let script = "display notification \"\(message)\" with title \"\(title)\" sound name \"Glass\""
+        // Sanitize inputs before interpolating into AppleScript to prevent injection.
+        let safeTitle = title.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let safeMsg = message.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "display notification \"\(safeMsg)\" with title \"\(safeTitle)\" sound name \"Glass\""
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         task.arguments = ["-e", script]
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         try? task.run()
-    }
-
-    // MARK: - Update
-
-    private let repoAPI = "https://api.github.com/repos/ekeng92/aeon-dispatch/commits/main"
-    private let repoURL = "https://github.com/ekeng92/aeon-dispatch.git"
-
-    func checkForUpdate() {
-        guard !updateChecking else { return }
-        updateChecking = true
-        addLog("Checking for updates...")
-
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-            var request = URLRequest(url: URL(string: self.repoAPI)!)
-            request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-            request.timeoutInterval = 10
-
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
-                DispatchQueue.main.async {
-                    self.updateChecking = false
-
-                    guard let data = data, error == nil,
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let sha = json["sha"] as? String else {
-                        self.addLog("Update check failed")
-                        return
-                    }
-
-                    let remoteSHA = String(sha.prefix(7))
-                    let commitInfo = (json["commit"] as? [String: Any])?["message"] as? String ?? ""
-                    let firstLine = commitInfo.split(separator: "\n").first.map(String.init) ?? commitInfo
-
-                    if Self.buildVersion == "dev" {
-                        // Local dev build: always show update available
-                        self.updateAvailable = true
-                        self.latestCommitMessage = "\(remoteSHA): \(firstLine)"
-                        self.addLog("Update available: \(remoteSHA)")
-                    } else if remoteSHA != Self.buildVersion {
-                        self.updateAvailable = true
-                        self.latestCommitMessage = "\(remoteSHA): \(firstLine)"
-                        self.addLog("Update available: \(remoteSHA) (current: \(Self.buildVersion))")
-                    } else {
-                        self.updateAvailable = false
-                        self.latestCommitMessage = ""
-                        self.addLog("Up to date (\(Self.buildVersion))")
-                    }
-                }
-            }
-            task.resume()
-        }
-    }
-
-    func performUpdate() {
-        guard !updateInProgress else { return }
-        updateInProgress = true
-        addLog("Starting update...")
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-
-            let cloneDir = NSTemporaryDirectory() + "aeon-dispatch-update"
-
-            // Clean previous attempt
-            try? FileManager.default.removeItem(atPath: cloneDir)
-
-            // Clone
-            let clone = Process()
-            clone.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            clone.arguments = ["clone", "--depth", "1", self.repoURL, cloneDir]
-            clone.standardOutput = FileHandle.nullDevice
-            clone.standardError = FileHandle.nullDevice
-            do {
-                try clone.run()
-                clone.waitUntilExit()
-            } catch {
-                DispatchQueue.main.async {
-                    self.updateInProgress = false
-                    self.addLog("Update failed: git clone error")
-                }
-                return
-            }
-
-            guard clone.terminationStatus == 0 else {
-                DispatchQueue.main.async {
-                    self.updateInProgress = false
-                    self.addLog("Update failed: git clone exit \(clone.terminationStatus)")
-                }
-                return
-            }
-
-            // Run install.sh (it preserves user data by design)
-            let install = Process()
-            install.executableURL = URL(fileURLWithPath: "/bin/bash")
-            install.arguments = ["\(cloneDir)/scripts/install.sh"]
-            install.currentDirectoryURL = URL(fileURLWithPath: cloneDir)
-            // Pipe stdin from /dev/null to auto-skip interactive prompts (defaults to No)
-            install.standardInput = FileHandle.nullDevice
-            let pipe = Pipe()
-            install.standardOutput = pipe
-            install.standardError = pipe
-
-            do {
-                try install.run()
-                install.waitUntilExit()
-            } catch {
-                DispatchQueue.main.async {
-                    self.updateInProgress = false
-                    self.addLog("Update failed: install error")
-                }
-                return
-            }
-
-            // Cleanup clone
-            try? FileManager.default.removeItem(atPath: cloneDir)
-
-            DispatchQueue.main.async {
-                self.updateInProgress = false
-                if install.terminationStatus == 0 {
-                    self.updateAvailable = false
-                    self.addLog("Update complete! The app will restart.")
-                    self.sendNotification(title: "AEON Dispatch", message: "Updated successfully. Restarting...")
-                    // Relaunch the app
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        let appPath = "\(NSHomeDirectory())/Applications/AEON Dispatch.app"
-                        let task = Process()
-                        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                        task.arguments = [appPath]
-                        try? task.run()
-                        NSApp.terminate(nil)
-                    }
-                } else {
-                    self.addLog("Update failed (exit \(install.terminationStatus))")
-                }
-            }
-        }
     }
 }
 

@@ -2,12 +2,14 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var manager: DispatchManager
-    @State private var editingFlow: FlowEditModel?
-    @State private var showEditor = false
-    @State private var editingCustomization: CustomizationEditModel?
-    @State private var showCustEditor = false
+    var closePanel: () -> Void = {}
 
     var body: some View {
+        mainList
+            .frame(width: 380, height: 640)
+    }
+
+    private var mainList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 statusCard
@@ -37,11 +39,6 @@ struct ContentView: View {
 
                 Divider().padding(.horizontal, 16)
 
-                updateSection
-                    .padding(16)
-
-                Divider().padding(.horizontal, 16)
-
                 activitySection
                     .padding(16)
 
@@ -57,37 +54,82 @@ struct ContentView: View {
                 .padding(.vertical, 10)
             }
         }
-        .frame(width: 380, height: 640)
-        .sheet(isPresented: $showEditor) {
-            if let model = editingFlow {
-                FlowEditorView(manager: manager, edit: model)
-            }
-        }
-        .sheet(isPresented: $showCustEditor) {
-            if let model = editingCustomization {
-                CustomizationEditorView(manager: manager, edit: model)
-            }
-        }
+    }
+
+    /// Closes the panel, then fires `action` after a brief delay so the panel
+    /// has fully dismissed before the editor window claims key focus.
+    /// All four editor-launch paths go through here.
+    private func afterPanelClose(_ action: @escaping () -> Void) {
+        closePanel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: action)
     }
 
     private func openEditor(for flow: DispatchManager.Flow) {
-        editingFlow = manager.editModel(for: flow)
-        showEditor = true
+        let model = manager.editModel(for: flow)
+        let editorId = "flow-\(flow.fileName)"
+        afterPanelClose {
+            WindowManager.shared.openEditor(
+                id: editorId,
+                title: "Edit Flow: \(flow.name)",
+                size: NSSize(width: 380, height: 640),
+                content: FlowEditorView(
+                    manager: manager,
+                    edit: model,
+                    onDismiss: { WindowManager.shared.closeEditor(id: editorId) }
+                )
+            )
+        }
     }
 
     private func openNewFlowEditor() {
-        editingFlow = manager.newFlowEditModel()
-        showEditor = true
+        let model = manager.newFlowEditModel()
+        let editorId = "flow-new"
+        afterPanelClose {
+            WindowManager.shared.openEditor(
+                id: editorId,
+                title: "New Flow",
+                size: NSSize(width: 380, height: 640),
+                content: FlowEditorView(
+                    manager: manager,
+                    edit: model,
+                    onDismiss: { WindowManager.shared.closeEditor(id: editorId) }
+                )
+            )
+        }
     }
 
     private func openCustEditor(for cust: DispatchManager.Customization) {
-        editingCustomization = manager.customizationEditModel(for: cust)
-        showCustEditor = true
+        let model = manager.customizationEditModel(for: cust)
+        let editorId = "cust-\(cust.fileName)"
+        afterPanelClose {
+            WindowManager.shared.openEditor(
+                id: editorId,
+                title: "Edit Customization: \(cust.name)",
+                size: NSSize(width: 380, height: 640),
+                content: CustomizationEditorView(
+                    manager: manager,
+                    edit: model,
+                    onDismiss: { WindowManager.shared.closeEditor(id: editorId) }
+                )
+            )
+        }
     }
 
     private func openNewCustEditor() {
-        editingCustomization = manager.newCustomizationEditModel()
-        showCustEditor = true
+        let model = manager.newCustomizationEditModel()
+        let editorId = "cust-new"
+        afterPanelClose {
+            WindowManager.shared.openEditor(
+                id: editorId,
+                title: "New Customization",
+                size: NSSize(width: 380, height: 640),
+                content: CustomizationEditorView(
+                    manager: manager,
+                    edit: model,
+                    onDismiss: { WindowManager.shared.closeEditor(id: editorId) }
+                )
+            )
+        }
     }
 
     // MARK: - Status Card
@@ -272,7 +314,7 @@ struct ContentView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                     if let lastRun = manager.lastRunTimes[flow.fileName] {
-                        Text("last: \(formatTimestamp(lastRun))")
+                        Text("last: \(formatISOTimestamp(lastRun))")
                             .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
                     }
@@ -291,6 +333,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
+                .tint(.orange)
                 .help("Edit \(flow.name)")
 
                 Button(action: { manager.runFlow(flow) }) {
@@ -395,69 +438,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Update
-
-    private var updateSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("UPDATE")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("v\(DispatchManager.buildVersion)")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-            }
-
-            if manager.updateInProgress {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Updating... your flows and config are safe.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if manager.updateAvailable {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.blue)
-                        Text("Update available")
-                            .font(.caption.weight(.medium))
-                    }
-                    if !manager.latestCommitMessage.isEmpty {
-                        Text(manager.latestCommitMessage)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(2)
-                    }
-                    Button(action: { manager.performUpdate() }) {
-                        Label("Update Now", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-                    .controlSize(.small)
-                    Text("Your flows, customizations, and config are preserved.")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                }
-            } else {
-                HStack(spacing: 8) {
-                    actionButton("Check for Updates", icon: "arrow.clockwise", tint: Color(.systemGray)) {
-                        manager.checkForUpdate()
-                    }
-                    if manager.updateChecking {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - Activity Log
 
     private var activitySection: some View {
@@ -532,27 +512,6 @@ struct ContentView: View {
         if !flow.enabled { return .gray }
         if manager.lastRunTimes[flow.fileName] != nil { return .green }
         return .orange
-    }
-
-    private func formatTimestamp(_ iso: String) -> String {
-        // Parse ISO timestamp and show relative time
-        let df = ISO8601DateFormatter()
-        df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = df.date(from: iso) else {
-            // Try without fractional seconds
-            df.formatOptions = [.withInternetDateTime]
-            guard let date = df.date(from: iso) else { return iso }
-            return relativeTime(from: date)
-        }
-        return relativeTime(from: date)
-    }
-
-    private func relativeTime(from date: Date) -> String {
-        let interval = Date().timeIntervalSince(date)
-        if interval < 60 { return "just now" }
-        if interval < 3600 { return "\(Int(interval / 60))m ago" }
-        if interval < 86400 { return "\(Int(interval / 3600))h ago" }
-        return "\(Int(interval / 86400))d ago"
     }
 
     private func depIndicator(_ name: String, ok: Bool) -> some View {

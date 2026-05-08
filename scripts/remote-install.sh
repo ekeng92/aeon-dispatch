@@ -9,22 +9,22 @@ set -euo pipefail
 REPO="https://github.com/ekeng92/aeon-dispatch.git"
 CLONE_DIR="${TMPDIR:-/tmp}/aeon-dispatch-install"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-RESET='\033[0m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
 
-info()  { echo -e "  ${CYAN}▸${RESET} $1"; }
-ok()    { echo -e "  ${GREEN}✓${RESET} $1"; }
-warn()  { echo -e "  ${YELLOW}⚠${RESET} $1"; }
-fail()  { echo -e "  ${RED}✗${RESET} $1"; exit 1; }
+info()  { echo "  ${CYAN}▸${RESET} $1"; }
+ok()    { echo "  ${GREEN}✓${RESET} $1"; }
+warn()  { echo "  ${YELLOW}⚠${RESET} $1"; }
+fail()  { echo "  ${RED}✗${RESET} $1"; exit 1; }
 
 echo ""
-echo -e "${BOLD}═══════════════════════════════════════════${RESET}"
-echo -e "${BOLD}  ⚡ AEON Dispatch — Installer${RESET}"
-echo -e "${BOLD}═══════════════════════════════════════════${RESET}"
+echo "${BOLD}═══════════════════════════════════════════${RESET}"
+echo "${BOLD}  ⚡ AEON Dispatch — Installer${RESET}"
+echo "${BOLD}═══════════════════════════════════════════${RESET}"
 echo ""
 
 # ── Uninstall mode ─────────────────────────────────────────

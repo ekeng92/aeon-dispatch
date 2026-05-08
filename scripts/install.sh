@@ -19,23 +19,23 @@ LAUNCH_AGENT_DIR="$AEON_HOME/Library/LaunchAgents"
 LAUNCH_AGENT_ID="com.aeon.dispatch"
 LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$LAUNCH_AGENT_ID.plist"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
 
-info()  { echo -e "  ${CYAN}▸${RESET} $1"; }
-ok()    { echo -e "  ${GREEN}✓${RESET} $1"; }
-warn()  { echo -e "  ${YELLOW}⚠${RESET} $1"; }
-fail()  { echo -e "  ${RED}✗${RESET} $1"; exit 1; }
+info()  { echo "  ${CYAN}▸${RESET} $1"; }
+ok()    { echo "  ${GREEN}✓${RESET} $1"; }
+warn()  { echo "  ${YELLOW}⚠${RESET} $1"; }
+fail()  { echo "  ${RED}✗${RESET} $1"; exit 1; }
 
 echo ""
-echo -e "${BOLD}═══════════════════════════════════════════${RESET}"
-echo -e "${BOLD}  ⚡ AEON Dispatch — Installation${RESET}"
-echo -e "${BOLD}═══════════════════════════════════════════${RESET}"
+echo "${BOLD}═══════════════════════════════════════════${RESET}"
+echo "${BOLD}  ⚡ AEON Dispatch — Installation${RESET}"
+echo "${BOLD}═══════════════════════════════════════════${RESET}"
 echo ""
 
 if [[ -n "${AEON_PREFIX:-}" ]]; then
@@ -144,7 +144,7 @@ fi
 info "Building AEON Dispatch (compiling from source)..."
 cd "$PROJECT_DIR"
 make app 2>&1 | while IFS= read -r line; do
-    echo -e "    ${DIM}$line${RESET}"
+    echo "    ${DIM}$line${RESET}"
 done
 echo ""
 
@@ -224,21 +224,24 @@ PLIST
     launchctl bootout "gui/$(id -u)" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
     launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT_PLIST"
     ok "LaunchAgent installed — AEON Dispatch will start on login"
+    ok "App launched (via LaunchAgent)"
 else
     info "Skipped LaunchAgent. Start manually: open '$INSTALL_DIR/$APP_NAME.app'"
 fi
 
-# ── Step 13: Launch the app ───────────────────────────────────────────
+# ── Step 13: Launch the app (only if LaunchAgent didn't start it) ─────
 
-open "$INSTALL_DIR/$APP_NAME.app"
-ok "App launched"
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    open "$INSTALL_DIR/$APP_NAME.app"
+    ok "App launched"
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────
 
 echo ""
-echo -e "${BOLD}═══════════════════════════════════════════${RESET}"
-echo -e "${GREEN}${BOLD}  ⚡ Installation complete!${RESET}"
-echo -e "${BOLD}═══════════════════════════════════════════${RESET}"
+echo "${BOLD}═══════════════════════════════════════════${RESET}"
+echo "${GREEN}${BOLD}  ⚡ Installation complete!${RESET}"
+echo "${BOLD}═══════════════════════════════════════════${RESET}"
 echo ""
 echo "  App:       $INSTALL_DIR/$APP_NAME.app"
 echo "  CLI:       $BIN_DIR/dispatch"

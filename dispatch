@@ -1,0 +1,638 @@
+#!/usr/bin/env zsh
+# ============================================================================
+# aeon-dispatch — Copilot CLI Flow Scheduler
+#
+# Define flows as JSON. Schedule them with launchd. View results.
+# Simple enough to validate in 5 minutes. Scalable enough to share.
+#
+# Usage:
+#   dispatch run <flow>         Run a flow now (foreground, streams output)
+#   dispatch run-all            Run all enabled flows that are due (background)
+#   dispatch list               List flows and their status
+#   dispatch results [flow]     Show recent results
+#   dispatch open [flow]        Open latest result in editor
+#   dispatch status             Show scheduler status
+#   dispatch install            Install launchd scheduler
+#   dispatch uninstall          Remove launchd scheduler
+#   dispatch help               Show this help
+# ============================================================================
+
+set -uo pipefail
+
+DISPATCH_VERSION="0.1.0"
+DISPATCH_HOME="${DISPATCH_HOME:-${HOME}/.aeon-dispatch}"
+DISPATCH_FLOWS="${DISPATCH_HOME}/flows"
+DISPATCH_RESULTS="${DISPATCH_HOME}/results"
+DISPATCH_LOGS="${DISPATCH_HOME}/logs"
+DISPATCH_STATE="${DISPATCH_HOME}/state.json"
+DISPATCH_CONFIG="${DISPATCH_HOME}/config.sh"
+
+LAUNCHD_LABEL="com.aeon.dispatch"
+LAUNCHD_PLIST="${HOME}/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+
+# ---------------------------------------------------------------------------
+# Colors (disabled when not a terminal)
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+  BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; DIM=''; NC=''
+fi
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+log()     { echo "[dispatch] $*" }
+log_err() { echo "${RED}[dispatch] ERROR: $*${NC}" >&2 }
+
+ensure_dirs() {
+  mkdir -p "${DISPATCH_FLOWS}" "${DISPATCH_RESULTS}" "${DISPATCH_LOGS}"
+}
+
+load_config() {
+  [[ -f "${DISPATCH_CONFIG}" ]] && source "${DISPATCH_CONFIG}"
+  DISPATCH_COPILOT="${DISPATCH_COPILOT:-copilot}"
+  DISPATCH_NOTIFY="${DISPATCH_NOTIFY:-true}"
+  DISPATCH_EDITOR="${DISPATCH_EDITOR:-${EDITOR:-code}}"
+}
+
+ensure_state() {
+  [[ -f "${DISPATCH_STATE}" ]] || echo '{}' > "${DISPATCH_STATE}"
+}
+
+expand_path() { echo "${1/#\~/$HOME}" }
+
+notify() {
+  local title="$1" message="$2"
+  [[ "${DISPATCH_NOTIFY}" == "true" ]] || return 0
+  osascript -e "display notification \"${message}\" with title \"${title}\" sound name \"Glass\"" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# State: track last-run timestamps per flow
+# ---------------------------------------------------------------------------
+state_get_last_run() {
+  jq -r --arg id "$1" '.[$id].lastRun // ""' "${DISPATCH_STATE}" 2>/dev/null
+}
+
+state_set_last_run() {
+  local flow_id="$1" ts="$2"
+  local tmp="${DISPATCH_STATE}.tmp.$$"
+  jq --arg id "${flow_id}" --arg ts "${ts}" \
+    '.[$id].lastRun = $ts' "${DISPATCH_STATE}" > "${tmp}" && mv "${tmp}" "${DISPATCH_STATE}"
+}
+
+# ---------------------------------------------------------------------------
+# Flow file helpers
+# ---------------------------------------------------------------------------
+get_flow_files() {
+  find "${DISPATCH_FLOWS}" -name "*.json" -type f 2>/dev/null | sort
+}
+
+get_flow_id() { basename "$1" .json }
+
+flow_get() { jq -r "$2" "$1" }
+
+is_flow_enabled() {
+  [[ "$(flow_get "$1" 'if .enabled == false then "false" else "true" end')" == "true" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Schedule: is a flow due?
+# ---------------------------------------------------------------------------
+parse_interval() {
+  local val="${1//[!0-9]/}" unit="${1//[0-9]/}"
+  case "${unit}" in
+    s) echo "${val}" ;;
+    m) echo $(( val * 60 )) ;;
+    h) echo $(( val * 3600 )) ;;
+    *) echo $(( val * 60 )) ;;
+  esac
+}
+
+check_day_filter() {
+  local flow_file="$1"
+  local stype
+  stype=$(flow_get "${flow_file}" '.schedule | type')
+  [[ "${stype}" == "string" ]] && return 0
+
+  local days_json
+  days_json=$(flow_get "${flow_file}" '.schedule.days // null')
+  [[ "${days_json}" == "null" ]] && return 0
+
+  local today
+  today=$(date +%a)
+  echo "${days_json}" | jq -e --arg d "${today}" \
+    'map(ascii_downcase) | index($d | ascii_downcase)' > /dev/null 2>&1
+}
+
+check_active_hours() {
+  local flow_file="$1"
+  local stype
+  stype=$(flow_get "${flow_file}" '.schedule | type')
+  [[ "${stype}" == "string" ]] && return 0
+
+  local hours_json
+  hours_json=$(flow_get "${flow_file}" '.schedule.active_hours // null')
+  [[ "${hours_json}" == "null" ]] && return 0
+
+  local start_h end_h now_h
+  start_h=$(echo "${hours_json}" | jq -r '.[0]')
+  end_h=$(echo "${hours_json}" | jq -r '.[1]')
+  now_h=$(date +%H:%M)
+
+  [[ ! "${now_h}" < "${start_h}" && "${now_h}" < "${end_h}" ]]
+}
+
+is_flow_due() {
+  local flow_file="$1"
+  local flow_id
+  flow_id=$(get_flow_id "${flow_file}")
+
+  # Check day and active_hours filters first
+  check_day_filter "${flow_file}" || return 1
+  check_active_hours "${flow_file}" || return 1
+
+  local sched_type
+  sched_type=$(flow_get "${flow_file}" '.schedule | if type == "string" then "manual" elif .every then "interval" elif .at then "timeofday" else "manual" end')
+
+  case "${sched_type}" in
+    interval)
+      local interval_str last_run_str
+      interval_str=$(flow_get "${flow_file}" '.schedule.every')
+      last_run_str=$(state_get_last_run "${flow_id}")
+
+      # Never run before = due
+      [[ -z "${last_run_str}" ]] && return 0
+
+      local interval_s last_epoch now_epoch
+      interval_s=$(parse_interval "${interval_str}")
+      last_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${last_run_str}" +%s 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      (( (now_epoch - last_epoch) >= interval_s ))
+      ;;
+
+    timeofday)
+      local target_time now_time today_date last_run_str
+      target_time=$(flow_get "${flow_file}" '.schedule.at')
+      now_time=$(date +%H:%M)
+      today_date=$(date +%Y-%m-%d)
+
+      # Not yet time
+      [[ "${now_time}" < "${target_time}" ]] && return 1
+
+      # Already ran today?
+      last_run_str=$(state_get_last_run "${flow_id}")
+      if [[ -n "${last_run_str}" ]]; then
+        local last_date="${last_run_str:0:10}"
+        [[ "${last_date}" == "${today_date}" ]] && return 1
+      fi
+      return 0
+      ;;
+
+    manual) return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Execute a flow
+# ---------------------------------------------------------------------------
+execute_flow() {
+  local flow_file="$1"
+  local foreground="${2:-false}"
+
+  local flow_id flow_name agent prompt workdir model preflight
+  flow_id=$(get_flow_id "${flow_file}")
+  flow_name=$(flow_get "${flow_file}" '.name')
+
+  # Resolve customization reference (if present)
+  local cust_file cust_ref
+  cust_ref=$(flow_get "${flow_file}" '.customization // ""')
+  if [[ -n "${cust_ref}" && "${cust_ref}" != "null" ]]; then
+    cust_file="${DISPATCH_HOME}/customizations/${cust_ref}.json"
+    if [[ ! -f "${cust_file}" ]]; then
+      log_err "Customization not found: ${cust_ref} (for flow ${flow_name})"
+      return 1
+    fi
+    # Customization values (defaults)
+    agent=$(jq -r '.agent // "copilot"' "${cust_file}")
+    workdir=$(expand_path "$(jq -r '.workdir // "."' "${cust_file}")")
+    model=$(jq -r '.model // ""' "${cust_file}")
+    # Flow-level overrides (if present, they win)
+    local flow_agent flow_workdir flow_model
+    flow_agent=$(flow_get "${flow_file}" '.agent // ""')
+    flow_workdir=$(flow_get "${flow_file}" '.workdir // ""')
+    flow_model=$(flow_get "${flow_file}" '.model // ""')
+    [[ -n "${flow_agent}" && "${flow_agent}" != "null" ]] && agent="${flow_agent}"
+    [[ -n "${flow_workdir}" && "${flow_workdir}" != "null" ]] && workdir=$(expand_path "${flow_workdir}")
+    [[ -n "${flow_model}" && "${flow_model}" != "null" ]] && model="${flow_model}"
+  else
+    agent=$(flow_get "${flow_file}" '.agent // "copilot"')
+    workdir=$(expand_path "$(flow_get "${flow_file}" '.workdir // "."')")
+    model=$(flow_get "${flow_file}" '.model // ""')
+  fi
+
+  # Resolve prompt: customization prompt_file < flow prompt_file < flow inline prompt
+  local prompt_file
+  prompt_file=$(flow_get "${flow_file}" '.prompt_file // ""')
+  # Fall back to customization prompt_file if flow has none
+  if [[ (-z "${prompt_file}" || "${prompt_file}" == "null") && -n "${cust_ref}" && "${cust_ref}" != "null" ]]; then
+    prompt_file=$(jq -r '.prompt_file // ""' "${cust_file}")
+  fi
+  if [[ -n "${prompt_file}" && "${prompt_file}" != "null" ]]; then
+    prompt_file=$(expand_path "${prompt_file}")
+    if [[ -f "${prompt_file}" ]]; then
+      prompt=$(cat "${prompt_file}")
+    else
+      log_err "Prompt file not found: ${prompt_file}"
+      return 1
+    fi
+  else
+    prompt=$(flow_get "${flow_file}" '.prompt')
+  fi
+
+  # Preflight gate (optional shell command that must exit 0)
+  preflight=$(flow_get "${flow_file}" '.preflight // ""')
+  if [[ -n "${preflight}" && "${preflight}" != "null" ]]; then
+    log "Preflight: ${flow_name}..."
+    if ! eval "${preflight}" > /dev/null 2>&1; then
+      log "Preflight failed for ${flow_name}. Skipping."
+      return 0
+    fi
+  fi
+
+  # Prepare output paths
+  local ts_file ts_iso
+  ts_file=$(date +%Y-%m-%d_%H%M)
+  ts_iso=$(date +%Y-%m-%dT%H:%M:%S)
+  local result_dir="${DISPATCH_RESULTS}/${flow_id}"
+  local result_file="${result_dir}/${ts_file}.md"
+  local log_file="${DISPATCH_LOGS}/${flow_id}_${ts_file}.log"
+  local raw_file="${DISPATCH_LOGS}/${flow_id}_${ts_file}.raw"
+  mkdir -p "${result_dir}"
+
+  log "Running: ${BOLD}${flow_name}${NC} (agent: ${agent})"
+
+  local start_time
+  start_time=$(date +%s)
+
+  # Build copilot command args
+  local -a cmd_args=()
+  if [[ -n "${model}" && "${model}" != "null" ]]; then
+    cmd_args+=(--model "${model}")
+  fi
+  if [[ -n "${agent}" && "${agent}" != "null" && "${agent}" != "default" ]]; then
+    cmd_args+=(--agent "${agent}")
+  fi
+  cmd_args+=(-p "${prompt}" --allow-all-tools --silent --no-color)
+
+  # Write result header
+  cat > "${result_file}" << HEADER
+# ${flow_name}
+
+> Generated: $(date "+%Y-%m-%d %H:%M %Z")
+> Flow: \`${flow_id}\` | Agent: \`${agent}\`
+
+---
+
+HEADER
+
+  # Execute
+  local exit_code=0
+  if [[ "${foreground}" == "true" ]]; then
+    # Interactive: stream to terminal AND capture to file
+    (
+      cd "${workdir}" 2>/dev/null || cd "${HOME}"
+      "${DISPATCH_COPILOT}" "${cmd_args[@]}" 2>>"${log_file}"
+    ) | tee "${raw_file}" || exit_code=$?
+  else
+    # Automated: capture to file only
+    (
+      cd "${workdir}" 2>/dev/null || cd "${HOME}"
+      "${DISPATCH_COPILOT}" "${cmd_args[@]}" 2>>"${log_file}"
+    ) > "${raw_file}" 2>&1 || exit_code=$?
+  fi
+
+  # Append clean output to result file (strip any residual ANSI)
+  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "${raw_file}" >> "${result_file}" 2>/dev/null
+  rm -f "${raw_file}"
+
+  # Footer
+  local end_time duration
+  end_time=$(date +%s)
+  duration=$(( end_time - start_time ))
+
+  cat >> "${result_file}" << FOOTER
+
+---
+_aeon-dispatch v${DISPATCH_VERSION} | Flow: ${flow_id} | Duration: ${duration}s | Exit: ${exit_code}_
+FOOTER
+
+  # Update state
+  state_set_last_run "${flow_id}" "${ts_iso}"
+
+  # Notify
+  if (( exit_code == 0 )); then
+    log "${GREEN}Done: ${flow_name} (${duration}s)${NC}"
+    log "  Result: ${result_file}"
+    notify "AEON Dispatch" "${flow_name} completed (${duration}s)"
+  else
+    log "${RED}Failed: ${flow_name} (exit ${exit_code})${NC}"
+    notify "AEON Dispatch" "${flow_name} FAILED (exit ${exit_code})"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_run() {
+  local flow_name="${1:-}"
+  if [[ -z "${flow_name}" ]]; then
+    log_err "Usage: dispatch run <flow-name>"
+    echo ""; cmd_list
+    return 1
+  fi
+
+  local flow_file="${DISPATCH_FLOWS}/${flow_name}.json"
+  if [[ ! -f "${flow_file}" ]]; then
+    log_err "Flow not found: ${flow_name}"
+    echo ""; cmd_list
+    return 1
+  fi
+
+  execute_flow "${flow_file}" true
+}
+
+cmd_run_all() {
+  local ran=0
+  while IFS= read -r flow_file; do
+    [[ -z "${flow_file}" ]] && continue
+    is_flow_enabled "${flow_file}" || continue
+    is_flow_due "${flow_file}" || continue
+
+    execute_flow "${flow_file}" false
+    ran=$(( ran + 1 ))
+  done < <(get_flow_files)
+
+  # Silent when nothing is due (launchd calls this every minute)
+}
+
+cmd_list() {
+  echo "${BOLD}AEON Dispatch${NC} v${DISPATCH_VERSION}"
+  echo ""
+  printf "  ${BOLD}%-22s %-10s %-18s %s${NC}\n" "FLOW" "STATUS" "SCHEDULE" "LAST RUN"
+  echo "  $(printf '%.0s-' {1..72})"
+
+  local fid fname enabled sched_desc last_run status_str
+  while IFS= read -r flow_file; do
+    [[ -z "${flow_file}" ]] && continue
+
+    fid=$(get_flow_id "${flow_file}")
+    fname=$(flow_get "${flow_file}" '.name')
+    enabled=$(flow_get "${flow_file}" 'if .enabled == false then "false" else "true" end')
+    sched_desc=$(flow_get "${flow_file}" '.schedule | if type == "string" then . elif .every then "every " + .every elif .at then "daily " + .at else "manual" end')
+    last_run=$(state_get_last_run "${fid}")
+    [[ -z "${last_run}" ]] && last_run="never"
+
+    if [[ "${enabled}" == "true" ]]; then
+      status_str="${GREEN}enabled${NC}"
+    else
+      status_str="${YELLOW}disabled${NC}"
+    fi
+
+    printf "  %-22s %b  %-18s %s\n" "${fid}" "${status_str}" "${sched_desc}" "${last_run}"
+  done < <(get_flow_files)
+
+  local total
+  total=$(get_flow_files | wc -l | tr -d ' ')
+  if (( total == 0 )); then
+    echo "  ${DIM}(no flows defined)${NC}"
+    echo ""
+    echo "  Add flow files to: ${DISPATCH_FLOWS}/"
+    echo "  Example: dispatch help"
+  fi
+  echo ""
+}
+
+cmd_results() {
+  local flow_name="${1:-}"
+  if [[ -n "${flow_name}" ]]; then
+    local result_dir="${DISPATCH_RESULTS}/${flow_name}"
+    if [[ ! -d "${result_dir}" ]]; then
+      log_err "No results for: ${flow_name}"
+      return 1
+    fi
+    local latest
+    latest=$(ls -t "${result_dir}"/*.md 2>/dev/null | head -1)
+    if [[ -n "${latest}" ]]; then
+      cat "${latest}"
+    else
+      log "No results yet for ${flow_name}"
+    fi
+  else
+    echo "${BOLD}Recent Results (7 days)${NC}"
+    echo ""
+    local fid ts
+    find "${DISPATCH_RESULTS}" -name "*.md" -type f -mtime -7 2>/dev/null | sort -r | head -20 | while read -r f; do
+      fid=$(basename "$(dirname "$f")")
+      ts=$(basename "$f" .md)
+      printf "  %-22s %s\n" "${fid}" "${ts}"
+      found=1
+    done
+    echo ""
+    echo "  ${DIM}dispatch results <flow>${NC}  — view latest result"
+    echo "  ${DIM}dispatch open <flow>${NC}     — open in editor"
+    echo ""
+  fi
+}
+
+cmd_open() {
+  local flow_name="${1:-}"
+  local target
+
+  if [[ -n "${flow_name}" ]]; then
+    local result_dir="${DISPATCH_RESULTS}/${flow_name}"
+    target=$(ls -t "${result_dir}"/*.md 2>/dev/null | head -1)
+  else
+    target=$(find "${DISPATCH_RESULTS}" -name "*.md" -type f 2>/dev/null | sort -r | head -1)
+  fi
+
+  if [[ -n "${target}" ]]; then
+    "${DISPATCH_EDITOR}" "${target}"
+    log "Opened: ${target}"
+  else
+    log "No results found."
+  fi
+}
+
+cmd_status() {
+  echo "${BOLD}AEON Dispatch${NC} v${DISPATCH_VERSION}"
+  echo ""
+
+  # Scheduler
+  if launchctl list "${LAUNCHD_LABEL}" &>/dev/null 2>&1; then
+    echo "  Scheduler: ${GREEN}running${NC}"
+  else
+    echo "  Scheduler: ${YELLOW}not installed${NC}  (run: dispatch install)"
+  fi
+
+  # Copilot
+  if command -v "${DISPATCH_COPILOT}" &>/dev/null; then
+    echo "  Copilot:   ${GREEN}found${NC} (${DISPATCH_COPILOT})"
+  else
+    echo "  Copilot:   ${RED}not found${NC} (set DISPATCH_COPILOT in config.sh)"
+  fi
+
+  # Flows
+  local total=0 enabled_count=0
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    total=$(( total + 1 ))
+    is_flow_enabled "$f" && enabled_count=$(( enabled_count + 1 ))
+  done < <(get_flow_files)
+  echo "  Flows:     ${enabled_count} enabled / ${total} total"
+
+  # Recent results
+  local recent
+  recent=$(find "${DISPATCH_RESULTS}" -name "*.md" -type f -mtime -1 2>/dev/null | wc -l | tr -d ' ')
+  echo "  Results:   ${recent} in last 24h"
+
+  echo ""
+  echo "  Config:  ${DISPATCH_CONFIG}"
+  echo "  Flows:   ${DISPATCH_FLOWS}/"
+  echo "  Results: ${DISPATCH_RESULTS}/"
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
+# LaunchD management
+# ---------------------------------------------------------------------------
+cmd_install_launchd() {
+  ensure_dirs
+
+  # Resolve dispatch binary path
+  local dispatch_path="${0:A}"
+
+  # Resolve node/nvm path for launchd environment
+  local node_dir
+  node_dir=$(dirname "$(which node 2>/dev/null)" || echo "/usr/local/bin")
+
+  cat > "${LAUNCHD_PLIST}" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>${dispatch_path}</string>
+    <string>run-all</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>${DISPATCH_LOGS}/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>${DISPATCH_LOGS}/launchd-error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${node_dir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+
+  launchctl unload "${LAUNCHD_PLIST}" 2>/dev/null || true
+  launchctl load "${LAUNCHD_PLIST}"
+
+  log "${GREEN}Scheduler installed.${NC}"
+  log "  Runs: every 60 seconds"
+  log "  Plist: ${LAUNCHD_PLIST}"
+  log "  Logs:  ${DISPATCH_LOGS}/launchd*.log"
+  echo ""
+  log "Only flows that are ${BOLD}due${NC} will execute. See: dispatch list"
+}
+
+cmd_uninstall_launchd() {
+  if [[ -f "${LAUNCHD_PLIST}" ]]; then
+    launchctl unload "${LAUNCHD_PLIST}" 2>/dev/null || true
+    rm "${LAUNCHD_PLIST}"
+    log "Scheduler removed."
+  else
+    log "No scheduler found."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+cmd_usage() {
+  cat << 'USAGE'
+aeon-dispatch — Copilot CLI Flow Scheduler
+
+Usage: dispatch <command> [args]
+
+Commands:
+  run <flow>       Run a flow now (foreground, streams output)
+  run-all          Run all enabled flows that are due
+  list             List flows and their status
+  results [flow]   Show recent results (latest for a flow, or index of all)
+  open [flow]      Open latest result in your editor
+  status           Show scheduler and system status
+  install          Install launchd scheduler (fires every 60s)
+  uninstall        Remove launchd scheduler
+  help             Show this help
+
+Flow definition (JSON file in ~/.aeon-dispatch/flows/):
+
+  Time-of-day:
+  {
+    "name": "Daily Reflection",
+    "schedule": { "at": "16:00", "days": ["Mon","Tue","Wed","Thu","Fri"] },
+    "agent": "alpha-dev",
+    "prompt": "Run /ekeng-daily-reflection",
+    "workdir": "~/IdeaProjects/clvs_us-homeinspector-ai_toolshed",
+    "enabled": true
+  }
+
+  Interval with active hours:
+  {
+    "name": "PR Review",
+    "schedule": { "every": "30m", "active_hours": ["09:00","18:00"] },
+    "agent": "alpha-dev",
+    "prompt": "Review open PRs in API and Web repos",
+    "workdir": "~/IdeaProjects/clvs_us-homeinspector-ai_toolshed",
+    "preflight": "gh pr list --repo MyOrg/my-repo --json number --jq 'length > 0'",
+    "enabled": true
+  }
+
+Optional fields: model, preflight, prompt_file, active_hours, days
+USAGE
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+ensure_dirs
+load_config
+ensure_state
+
+case "${1:-help}" in
+  run)         cmd_run "${2:-}" ;;
+  run-all)     cmd_run_all ;;
+  list)        cmd_list ;;
+  results)     cmd_results "${2:-}" ;;
+  open)        cmd_open "${2:-}" ;;
+  status)      cmd_status ;;
+  install)     cmd_install_launchd ;;
+  uninstall)   cmd_uninstall_launchd ;;
+  help|--help|-h) cmd_usage ;;
+  --version)   echo "aeon-dispatch ${DISPATCH_VERSION}" ;;
+  *)           log_err "Unknown command: $1"; cmd_usage; exit 1 ;;
+esac

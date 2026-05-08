@@ -1,0 +1,11 @@
+{
+  "name": "Daily Reflection",
+  "schedule": {
+    "at": "16:00",
+    "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+  },
+  "agent": "alpha-dev",
+  "prompt": "Run /ekeng-daily-reflection. Output the full reflection summary.",
+  "workdir": "~/IdeaProjects/clvs_us-homeinspector-ai_toolshed",
+  "enabled": true
+}

@@ -306,6 +306,11 @@ final class DispatchManager: ObservableObject {
         checkScheduler()
     }
 
+    /// Path to the live output log for a running flow. Remains until next run.
+    func flowLogPath(for fileName: String) -> String {
+        "/tmp/aeon-dispatch-\(fileName).log"
+    }
+
     func runFlow(_ flow: Flow) {
         guard !runningFlows.contains(flow.fileName) else {
             addLog("Already running: \(flow.name)")
@@ -314,6 +319,8 @@ final class DispatchManager: ObservableObject {
 
         runningFlows.insert(flow.fileName)
         addLog("Starting: \(flow.name)")
+
+        let logPath = flowLogPath(for: flow.fileName)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -324,20 +331,39 @@ final class DispatchManager: ObservableObject {
             task.standardOutput = pipe
             task.standardError = pipe
 
+            // Write all output to a per-flow log so the user can tail it live
+            FileManager.default.createFile(atPath: logPath, contents: nil)
+            let logHandle = FileHandle(forWritingAtPath: logPath)
+            let header = "=== \(flow.name) — started \(Date()) ===\n"
+            logHandle?.write(header.data(using: .utf8) ?? Data())
+
+            // Stream output to log in real time
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return }
+                logHandle?.write(chunk)
+            }
+
             do {
                 try task.run()
                 task.waitUntilExit()
 
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let stderr = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                pipe.fileHandleForReading.readabilityHandler = nil
+                let footer = "\n=== exit \(task.terminationStatus) ===\n"
+                logHandle?.write(footer.data(using: .utf8) ?? Data())
+                logHandle?.closeFile()
+
                 let success = task.terminationStatus == 0
+                // Read the captured output for the failure detail line
+                let output = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
+                let lastLines = output.split(separator: "\n").suffix(5).joined(separator: " ")
 
                 DispatchQueue.main.async {
                     self.runningFlows.remove(flow.fileName)
                     if success {
                         self.addLog("Done: \(flow.name)")
                     } else {
-                        let detail = stderr.isEmpty ? "" : " — \(stderr.prefix(200))"
+                        let detail = lastLines.isEmpty ? "" : " — \(lastLines.prefix(200))"
                         self.addLog("Failed: \(flow.name) (exit \(task.terminationStatus))\(detail)")
                     }
                     self.refresh()
@@ -347,6 +373,8 @@ final class DispatchManager: ObservableObject {
                     )
                 }
             } catch {
+                pipe.fileHandleForReading.readabilityHandler = nil
+                logHandle?.closeFile()
                 DispatchQueue.main.async {
                     self.runningFlows.remove(flow.fileName)
                     self.addLog("Error: \(flow.name) - \(error.localizedDescription)")
@@ -426,6 +454,122 @@ final class DispatchManager: ObservableObject {
         try? FileManager.default.removeItem(atPath: path)
         addLog("Deleted customization: \(cust.name)")
         loadCustomizations()
+    }
+
+    // MARK: - Import from Directory
+
+    /// File patterns that Aeon Dispatch treats as importable customization sources.
+    static let importablePatterns: [String] = [
+        "SKILL.md",
+        ".instructions.md",
+        ".agent.md",
+        ".prompt.md",
+        ".chatmode.md",
+    ]
+
+    /// Represents a file found during a directory scan, ready to preview before import.
+    struct ImportCandidate: Identifiable {
+        let id = UUID()
+        let name: String        // Human-readable display name
+        let fileName: String    // Slug used as the JSON file name
+        let promptFile: String  // Absolute path to the source file
+        let fileType: String    // "skill", "instruction", "agent", "prompt", "chatmode"
+        var selected: Bool = true
+    }
+
+    /// Scan `directory` and return candidate customizations. Does NOT write anything yet.
+    func scanImportCandidates(in directory: URL) -> [ImportCandidate] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+
+        var candidates: [ImportCandidate] = []
+        let existingFileNames = Set(customizations.map(\.fileName))
+
+        for case let fileURL as URL in enumerator {
+            let name = fileURL.lastPathComponent
+            guard let type = importedType(for: name) else { continue }
+
+            // Derive a human name from the folder or file name
+            let humanName = humanName(for: fileURL, type: type)
+            let slug = slugify(humanName)
+
+            // Skip if already imported
+            if existingFileNames.contains(slug) { continue }
+
+            candidates.append(ImportCandidate(
+                name: humanName,
+                fileName: slug,
+                promptFile: fileURL.path,
+                fileType: type
+            ))
+        }
+
+        // Sort: skills first, then instructions, then others; alpha within group
+        return candidates.sorted {
+            if $0.fileType != $1.fileType { return $0.fileType < $1.fileType }
+            return $0.name < $1.name
+        }
+    }
+
+    /// Write the selected candidates to `~/.aeon-dispatch/customizations/`.
+    /// Returns the count of successfully written files.
+    @discardableResult
+    func importCandidates(_ candidates: [ImportCandidate]) -> Int {
+        var count = 0
+        for candidate in candidates where candidate.selected {
+            let dict: [String: Any] = [
+                "name": candidate.name,
+                "agent": "default",
+                "description": "Imported \(candidate.fileType) from \(URL(fileURLWithPath: candidate.promptFile).deletingLastPathComponent().lastPathComponent)",
+                "prompt_file": candidate.promptFile,
+            ]
+            let path = "\(customizationsDir)/\(candidate.fileName).json"
+            if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: path))
+                count += 1
+            }
+        }
+        if count > 0 {
+            addLog("Imported \(count) customization(s)")
+            loadCustomizations()
+        }
+        return count
+    }
+
+    // MARK: - Import Helpers
+
+    private func importedType(for fileName: String) -> String? {
+        if fileName == "SKILL.md" { return "skill" }
+        if fileName.hasSuffix(".instructions.md") { return "instruction" }
+        if fileName.hasSuffix(".agent.md") { return "agent" }
+        if fileName.hasSuffix(".prompt.md") { return "prompt" }
+        if fileName.hasSuffix(".chatmode.md") { return "chatmode" }
+        return nil
+    }
+
+    private func humanName(for url: URL, type: String) -> String {
+        let fileName = url.lastPathComponent
+        if fileName == "SKILL.md" {
+            // Use the parent folder name: skills/my-cool-skill/SKILL.md → "my-cool-skill"
+            let parent = url.deletingLastPathComponent().lastPathComponent
+            return parent
+                .replacingOccurrences(of: "-", with: " ")
+                .capitalized
+        }
+        // For .instructions.md etc, strip the suffix
+        let base = fileName
+            .replacingOccurrences(of: ".instructions.md", with: "")
+            .replacingOccurrences(of: ".agent.md", with: "")
+            .replacingOccurrences(of: ".prompt.md", with: "")
+            .replacingOccurrences(of: ".chatmode.md", with: "")
+        return base
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
     }
 
     func customizationEditModel(for cust: Customization) -> CustomizationEditModel {

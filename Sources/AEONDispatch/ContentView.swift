@@ -4,9 +4,25 @@ struct ContentView: View {
     @ObservedObject var manager: DispatchManager
     var closePanel: () -> Void = {}
 
+    // Import sheet state
+    @State private var showingImportSheet = false
+    @State private var importCandidates: [DispatchManager.ImportCandidate] = []
+    @State private var importDirectory: URL? = nil
+
     var body: some View {
         mainList
             .frame(width: 380, height: 640)
+            .sheet(isPresented: $showingImportSheet) {
+                ImportSheetView(
+                    candidates: $importCandidates,
+                    directory: importDirectory,
+                    onImport: { selected in
+                        manager.importCandidates(selected)
+                        showingImportSheet = false
+                    },
+                    onCancel: { showingImportSheet = false }
+                )
+            }
     }
 
     private var mainList: some View {
@@ -184,6 +200,16 @@ struct ContentView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                // Import from a directory (e.g. .github/, contrib/ekeng/)
+                Button(action: beginImport) {
+                    Label("Import", systemImage: "square.and.arrow.down")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(.cyan)
+                .help("Import customizations from a folder (.instructions.md, SKILL.md, .agent.md, ...)")
+
                 Button(action: openNewCustEditor) {
                     Label("New", systemImage: "plus")
                         .font(.system(size: 10))
@@ -324,6 +350,16 @@ struct ContentView: View {
             Spacer()
 
             if manager.runningFlows.contains(flow.fileName) {
+                // Show a live terminal link while the flow is executing
+                Button(action: { openTerminalForFlow(flow) }) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(.green)
+                .help("Open live output in Terminal")
+
                 ProgressView()
                     .controlSize(.small)
             } else {
@@ -531,5 +567,180 @@ struct ContentView: View {
         .buttonStyle(.bordered)
         .tint(tint)
         .controlSize(.small)
+    }
+
+    // MARK: - Import
+
+    /// Open a folder picker, scan for importable files, then show the preview sheet.
+    private func beginImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Folder"
+        panel.message = "Select a folder to scan for customization files (.instructions.md, SKILL.md, .agent.md ...)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let candidates = manager.scanImportCandidates(in: url)
+        importDirectory = url
+        importCandidates = candidates
+        showingImportSheet = true
+    }
+
+    // MARK: - Terminal
+
+    /// Open Terminal.app tailing the live log file for the given flow.
+    private func openTerminalForFlow(_ flow: DispatchManager.Flow) {
+        let logPath = manager.flowLogPath(for: flow.fileName)
+        // Ensure the log file exists so tail doesn't error immediately
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+        let script = "tell application \"Terminal\" to do script \"echo 'AEON Dispatch — \(flow.name)'; tail -f \\\"\(logPath)\\\"\""
+        var error: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&error)
+    }
+}
+
+// MARK: - Import Sheet
+
+/// Preview sheet shown before committing the import.
+/// The user can toggle individual candidates on/off before pressing Import.
+struct ImportSheetView: View {
+    @Binding var candidates: [DispatchManager.ImportCandidate]
+    let directory: URL?
+    let onImport: ([DispatchManager.ImportCandidate]) -> Void
+    let onCancel: () -> Void
+
+    private var selectedCount: Int { candidates.filter(\.selected).count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Import Customizations")
+                    .font(.headline)
+                if let dir = directory {
+                    Text(dir.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding()
+
+            Divider()
+
+            if candidates.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "folder.badge.questionmark")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("No importable files found")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Looking for: SKILL.md, *.instructions.md, *.agent.md, *.prompt.md, *.chatmode.md")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
+            } else {
+                // Toggle-all row
+                HStack {
+                    Button(selectedCount == candidates.count ? "Deselect All" : "Select All") {
+                        let allSelected = selectedCount == candidates.count
+                        for i in candidates.indices { candidates[i].selected = !allSelected }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.blue)
+                    Spacer()
+                    Text("\(selectedCount) of \(candidates.count) selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+
+                Divider()
+
+                // Candidate list
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(candidates.indices, id: \.self) { i in
+                            HStack(spacing: 8) {
+                                Toggle("", isOn: $candidates[i].selected)
+                                    .labelsHidden()
+                                    .toggleStyle(.checkbox)
+
+                                typeIcon(candidates[i].fileType)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(candidates[i].name)
+                                        .font(.caption.weight(.medium))
+                                    Text(candidates[i].promptFile
+                                        .replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+
+                                Spacer()
+
+                                Text(candidates[i].fileType)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(.quaternary))
+                            }
+                            .padding(.horizontal)
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+
+            Divider()
+
+            // Footer buttons
+            HStack {
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.escape)
+                Spacer()
+                Button(
+                    action: { onImport(candidates) },
+                    label: {
+                        Text(candidates.isEmpty
+                             ? "Nothing to Import"
+                             : "Import \(selectedCount) Customization\(selectedCount == 1 ? "" : "s")")
+                    }
+                )
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedCount == 0)
+                .keyboardShortcut(.return)
+            }
+            .padding()
+        }
+        .frame(width: 480, height: 420)
+    }
+
+    @ViewBuilder
+    private func typeIcon(_ type: String) -> some View {
+        switch type {
+        case "skill":
+            Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.orange)
+        case "instruction":
+            Image(systemName: "doc.text.fill").foregroundStyle(.blue)
+        case "agent":
+            Image(systemName: "person.fill").foregroundStyle(.purple)
+        case "prompt":
+            Image(systemName: "text.bubble.fill").foregroundStyle(.green)
+        default:
+            Image(systemName: "doc.fill").foregroundStyle(.secondary)
+        }
     }
 }

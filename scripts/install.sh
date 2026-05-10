@@ -19,6 +19,14 @@ LAUNCH_AGENT_DIR="$AEON_HOME/Library/LaunchAgents"
 LAUNCH_AGENT_ID="com.aeon.dispatch"
 LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$LAUNCH_AGENT_ID.plist"
 
+# Parse flags
+NON_INTERACTIVE=false
+for arg in "$@"; do
+    case "$arg" in
+        --non-interactive) NON_INTERACTIVE=true ;;
+    esac
+done
+
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
 YELLOW=$'\033[0;33m'
@@ -195,6 +203,8 @@ fi
 if [[ -n "${AEON_PREFIX:-}" ]]; then
     info "Skipping LaunchAgent (dry-run mode)"
     REPLY="n"
+elif [[ "$NON_INTERACTIVE" == "true" ]]; then
+    REPLY="y"
 else
     echo ""
     read -p "  Start AEON Dispatch automatically on login? [y/N] " -n 1 -r < /dev/tty

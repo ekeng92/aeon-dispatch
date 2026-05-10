@@ -12,11 +12,18 @@ build:
 	@swift build -c release 2>&1 | grep -v "^$$" | tail -3
 	@echo "Done — binary at $(BUILD_DIR)/$(BINARY_NAME)"
 
-app: build
+app:
 	@echo "Creating app bundle..."
 	@mkdir -p "$(APP_BUNDLE)/Contents/MacOS"
 	@mkdir -p "$(APP_BUNDLE)/Contents/Resources"
+	@# Stamp build commit SHA into BuildInfo.swift then compile
+	@BUILD_SHA=$$(git rev-parse --short HEAD 2>/dev/null || echo "dev"); \
+	 sed -i '' "s/static let commitSHA = \".*\"/static let commitSHA = \"$$BUILD_SHA\"/" Sources/AEONDispatch/BuildInfo.swift; \
+	 echo "Compiling $(BINARY_NAME) ($$BUILD_SHA)..."; \
+	 swift build -c release 2>&1 | grep -v "^$$" | tail -3
 	@cp "$(BUILD_DIR)/$(BINARY_NAME)" "$(APP_BUNDLE)/Contents/MacOS/"
+	@# Restore BuildInfo.swift to placeholder so the repo stays clean
+	@sed -i '' 's/static let commitSHA = ".*"/static let commitSHA = "dev"/' Sources/AEONDispatch/BuildInfo.swift
 	@cp resources/Info.plist "$(APP_BUNDLE)/Contents/"
 	@# Stamp build version with git SHA
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(GIT_SHA)" "$(APP_BUNDLE)/Contents/Info.plist" 2>/dev/null || true

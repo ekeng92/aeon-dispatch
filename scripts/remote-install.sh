@@ -78,7 +78,7 @@ ok "Downloaded"
 # ── Install ────────────────────────────────────────────────
 
 cd "$CLONE_DIR"
-bash scripts/install.sh
+bash scripts/install.sh "$@"
 
 # ── Cleanup ────────────────────────────────────────────────
 

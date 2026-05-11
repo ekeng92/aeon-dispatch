@@ -30,6 +30,7 @@ app:
 	@test -f resources/AppIcon.icns && cp resources/AppIcon.icns "$(APP_BUNDLE)/Contents/Resources/" || true
 	@codesign --force --deep --sign - "$(APP_BUNDLE)" 2>/dev/null || true
 	@touch "$(APP_BUNDLE)"
+	@touch "$(APP_BUNDLE)/../.metadata_never_index"
 	@echo "Built: $(APP_BUNDLE) ($(GIT_SHA))"
 
 run: app
@@ -48,6 +49,15 @@ install: app
 	@codesign --force --deep --sign - "$(INSTALL_DIR)/$(APP_NAME).app" 2>/dev/null || true
 	@touch "$(INSTALL_DIR)/$(APP_NAME).app"
 	@echo "Installed: $(INSTALL_DIR)/$(APP_NAME).app"
+	@# Install LaunchAgent for auto-start on login
+	@mkdir -p "$(HOME)/Library/LaunchAgents"
+	@sed "s|__BINARY_PATH__|$(INSTALL_DIR)/$(APP_NAME).app/Contents/MacOS/$(BINARY_NAME)|g" \
+		resources/com.aeon.dispatch.plist > "$(HOME)/Library/LaunchAgents/com.aeon.dispatch.plist"
+	@launchctl bootout gui/$$(id -u) "$(HOME)/Library/LaunchAgents/com.aeon.dispatch.plist" 2>/dev/null || true
+	@launchctl bootstrap gui/$$(id -u) "$(HOME)/Library/LaunchAgents/com.aeon.dispatch.plist" 2>/dev/null || true
+	@echo "LaunchAgent installed (auto-start on login)"
+	@# Clean build artifact to prevent Spotlight duplicates
+	@rm -rf "$(APP_BUNDLE)"
 	@echo "Opening..."
 	@open "$(INSTALL_DIR)/$(APP_NAME).app"
 
@@ -56,8 +66,10 @@ uninstall:
 	@if pgrep -x $(BINARY_NAME) >/dev/null 2>&1; then \
 		pkill -x $(BINARY_NAME) 2>/dev/null || true; \
 	fi
+	@launchctl bootout gui/$$(id -u) "$(HOME)/Library/LaunchAgents/com.aeon.dispatch.plist" 2>/dev/null || true
+	@rm -f "$(HOME)/Library/LaunchAgents/com.aeon.dispatch.plist"
 	@rm -rf "$(INSTALL_DIR)/$(APP_NAME).app"
-	@echo "Removed from $(INSTALL_DIR)"
+	@echo "Removed from $(INSTALL_DIR), LaunchAgent"
 
 clean:
 	@rm -rf .build build

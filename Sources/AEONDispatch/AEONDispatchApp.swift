@@ -65,6 +65,16 @@ final class WindowManager {
     }
 }
 
+// MARK: - Keyable Panel
+
+/// NSPanel with `.nonactivatingPanel` returns false for `canBecomeKey` by default,
+/// which prevents SwiftUI controls from receiving interactive events (button taps,
+/// toggles, text fields). This subclass restores key-window capability while keeping
+/// the non-activating behavior (app stays in background, no Dock icon focus steal).
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 // MARK: - App Delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -94,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         let panelSize = NSSize(width: 380, height: 640)
-        panel = NSPanel(
+        panel = KeyablePanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.nonactivatingPanel, .titled, .closable, .fullSizeContentView],
             backing: .buffered,

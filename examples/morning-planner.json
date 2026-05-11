@@ -1,0 +1,9 @@
+{
+  "name": "Morning Planner",
+  "schedule": {
+    "at": "08:30",
+    "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+  },
+  "prompt_file": "~/.aeon-dispatch/prompts/morning-planner.prompt.md",
+  "enabled": false
+}

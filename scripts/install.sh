@@ -147,6 +147,40 @@ else
     ok "Existing flows preserved ($FLOW_COUNT flows)"
 fi
 
+# ── Step 7b: Install example customizations (only if empty) ──────────
+
+CUST_DIR="$DISPATCH_HOME/customizations"
+mkdir -p "$CUST_DIR"
+CUST_COUNT=$(find "$CUST_DIR" -name "*.json" 2>/dev/null | wc -l | tr -d ' ')
+if (( CUST_COUNT == 0 )); then
+    if [[ -d "$PROJECT_DIR/examples/customizations" ]]; then
+        for cust in "$PROJECT_DIR"/examples/customizations/*.json; do
+            [[ ! -f "$cust" ]] && continue
+            cp "$cust" "$CUST_DIR/"
+        done
+        ok "Example customizations installed"
+    fi
+else
+    ok "Existing customizations preserved ($CUST_COUNT)"
+fi
+
+# ── Step 7c: Install example prompts (only if empty) ─────────────────
+
+PROMPT_DIR="$DISPATCH_HOME/prompts"
+mkdir -p "$PROMPT_DIR"
+PROMPT_COUNT=$(find "$PROMPT_DIR" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+if (( PROMPT_COUNT == 0 )); then
+    if [[ -d "$PROJECT_DIR/examples/prompts" ]]; then
+        for pf in "$PROJECT_DIR"/examples/prompts/*.md; do
+            [[ ! -f "$pf" ]] && continue
+            cp "$pf" "$PROMPT_DIR/"
+        done
+        ok "Example prompts installed"
+    fi
+else
+    ok "Existing prompts preserved ($PROMPT_COUNT)"
+fi
+
 # ── Step 8: Build the app ─────────────────────────────────────────────
 
 info "Building AEON Dispatch (compiling from source)..."

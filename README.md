@@ -67,19 +67,49 @@ Flows are dispatch units stored in `~/.aeon-dispatch/flows/`. A flow can referen
 ### CLI
 
 ```bash
-# Run a flow
-dispatch run my-flow
+# Run a flow interactively
+dispatch run git-standup
 
-# List flows
+# List all flows and their status
 dispatch list
 
-# Show status
+# Import flows/customizations/prompts from a project folder
+dispatch sync ~/Projects/my-repo/.dispatch
+
+# Show scheduler and system status
 dispatch status
+
+# View recent results
+dispatch results
 ```
 
 ### Scheduling
 
 The app can install a LaunchAgent that runs the dispatch scheduler every 5 minutes. Flows with a `schedule` field are executed automatically based on their cron expression. Enable/disable from the "Actions" section in the menu bar popover.
+
+### Included Examples
+
+The install seeds five example flows that show different dispatch patterns:
+
+| Flow | Schedule | What It Does |
+|------|----------|-------------|
+| **Git Standup** | Manual | Summarizes recent git activity across repos. Run with `dispatch run git-standup` |
+| **Morning Planner** | Daily 8:30 AM (weekdays) | Scans tasks, git status, and blockers to plan your day |
+| **Daily Reflection** | Daily 4:00 PM (weekdays) | Reviews the day's commits and captures learnings |
+| **PR Review** | Every 30m (work hours) | Checks for open PRs and posts reviews. Uses `preflight` to skip when no PRs exist |
+| **Repo Health** | Monday 9:00 AM | Weekly dependency, test, and code quality check |
+
+All scheduled flows start **disabled**. Enable the ones you want from the menu bar app or edit the JSON directly.
+
+### Syncing from a Project Folder
+
+Teams can share dispatch configurations through their repos. Place a `.dispatch/` folder (or any folder) with `flows/`, `customizations/`, and/or `prompts/` subdirectories, then run:
+
+```bash
+dispatch sync ~/Projects/my-repo/.dispatch
+```
+
+This copies the contents into `~/.aeon-dispatch/`, merging with your existing configuration.
 
 ## Updating
 
@@ -142,6 +172,7 @@ make clean    # Remove build artifacts
   config.sh            # Copilot CLI path, model defaults
   flows/               # Flow JSON definitions
   customizations/      # Customization JSON profiles
+  prompts/             # Prompt files (.prompt.md)
   results/             # Dispatch output files
   logs/                # Execution logs
 ```

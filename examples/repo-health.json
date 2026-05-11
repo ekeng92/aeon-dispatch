@@ -1,0 +1,10 @@
+{
+  "name": "Repo Health Check",
+  "schedule": {
+    "at": "09:00",
+    "days": ["Mon"]
+  },
+  "prompt_file": "~/.aeon-dispatch/prompts/repo-health.prompt.md",
+  "preflight": "git rev-parse --is-inside-work-tree 2>/dev/null",
+  "enabled": false
+}

@@ -1,13 +1,11 @@
 {
-  "name": "PR Review (API + Web)",
+  "name": "PR Review",
   "schedule": {
     "every": "30m",
     "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
     "active_hours": ["09:00", "18:00"]
   },
-  "agent": "alpha-dev",
-  "prompt": "Check repos clvs_us-homeinspector-inspector_api and clvs_us-homeinspector-inspector_web_ui for open PRs. For each PR that either has no review from me or has new commits since my last review, run /hip-reviewer. Skip PRs I authored. Post reviews directly to GitHub.",
-  "workdir": "~/IdeaProjects/clvs_us-homeinspector-ai_toolshed",
-  "preflight": "test $(gh pr list --repo CoreLogicCo/clvs_us-homeinspector-inspector_api --state open --json number --jq length 2>/dev/null || echo 0) -gt 0 || test $(gh pr list --repo CoreLogicCo/clvs_us-homeinspector-inspector_web_ui --state open --json number --jq length 2>/dev/null || echo 0) -gt 0",
+  "prompt": "Check this repo for open pull requests. For each PR that has no review or has new commits since the last review, summarize the changes, flag any issues, and post a review comment. Skip PRs I authored.",
+  "preflight": "command -v gh >/dev/null 2>&1 && gh pr list --state open --json number --jq length 2>/dev/null | grep -q '[1-9]'",
   "enabled": false
 }

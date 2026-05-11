@@ -11,6 +11,7 @@
 #   dispatch list               List flows and their status
 #   dispatch results [flow]     Show recent results
 #   dispatch open [flow]        Open latest result in editor
+#   dispatch sync <folder>      Import flows/customizations/prompts from a folder
 #   dispatch status             Show scheduler status
 #   dispatch install            Install launchd scheduler
 #   dispatch uninstall          Remove launchd scheduler
@@ -570,6 +571,88 @@ cmd_uninstall_launchd() {
 }
 
 # ---------------------------------------------------------------------------
+# Sync: import flows, customizations, and prompts from a folder
+# ---------------------------------------------------------------------------
+cmd_sync() {
+  local source_dir="${1:-}"
+  if [[ -z "${source_dir}" ]]; then
+    log_err "Usage: dispatch sync <folder>"
+    echo ""
+    echo "  Imports flows, customizations, and prompts from a project folder."
+    echo "  The folder should contain one or more of:"
+    echo "    flows/              → copied to ~/.aeon-dispatch/flows/"
+    echo "    customizations/     → copied to ~/.aeon-dispatch/customizations/"
+    echo "    prompts/            → copied to ~/.aeon-dispatch/prompts/"
+    echo ""
+    echo "  Example: dispatch sync ~/Projects/my-repo/.dispatch"
+    echo "  Example: dispatch sync .  (if the current dir has flows/, etc.)"
+    return 1
+  fi
+
+  # Expand ~
+  source_dir="${source_dir/#\~/$HOME}"
+
+  if [[ ! -d "${source_dir}" ]]; then
+    log_err "Directory not found: ${source_dir}"
+    return 1
+  fi
+
+  local synced=0
+
+  # Sync customizations
+  if [[ -d "${source_dir}/customizations" ]]; then
+    local cust_dir="${DISPATCH_HOME}/customizations"
+    mkdir -p "${cust_dir}"
+    local count=0
+    for f in "${source_dir}/customizations"/*.json(N); do
+      cp "${f}" "${cust_dir}/"
+      count=$((count + 1))
+    done
+    if (( count > 0 )); then
+      log "${GREEN}✓${NC} Synced ${count} customization(s)"
+      synced=$((synced + count))
+    fi
+  fi
+
+  # Sync flows
+  if [[ -d "${source_dir}/flows" ]]; then
+    local count=0
+    for f in "${source_dir}/flows"/*.json(N); do
+      cp "${f}" "${DISPATCH_FLOWS}/"
+      count=$((count + 1))
+    done
+    if (( count > 0 )); then
+      log "${GREEN}✓${NC} Synced ${count} flow(s)"
+      synced=$((synced + count))
+    fi
+  fi
+
+  # Sync prompts
+  if [[ -d "${source_dir}/prompts" ]]; then
+    local prompt_dir="${DISPATCH_HOME}/prompts"
+    mkdir -p "${prompt_dir}"
+    local count=0
+    for f in "${source_dir}/prompts"/*.md(N); do
+      cp "${f}" "${prompt_dir}/"
+      count=$((count + 1))
+    done
+    if (( count > 0 )); then
+      log "${GREEN}✓${NC} Synced ${count} prompt(s)"
+      synced=$((synced + count))
+    fi
+  fi
+
+  if (( synced == 0 )); then
+    log "${YELLOW}No flows/, customizations/, or prompts/ found in ${source_dir}${NC}"
+    return 1
+  fi
+
+  echo ""
+  log "Synced ${synced} item(s) from ${source_dir}"
+  log "Run ${BOLD}dispatch list${NC} to see your flows."
+}
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 cmd_usage() {
@@ -584,6 +667,7 @@ Commands:
   list             List flows and their status
   results [flow]   Show recent results (latest for a flow, or index of all)
   open [flow]      Open latest result in your editor
+  sync <folder>    Import flows, customizations, and prompts from a folder
   status           Show scheduler and system status
   install          Install launchd scheduler (fires every 60s)
   uninstall        Remove launchd scheduler
@@ -593,11 +677,9 @@ Flow definition (JSON file in ~/.aeon-dispatch/flows/):
 
   Time-of-day:
   {
-    "name": "Daily Reflection",
-    "schedule": { "at": "16:00", "days": ["Mon","Tue","Wed","Thu","Fri"] },
-    "agent": "alpha-dev",
-    "prompt": "Run /ekeng-daily-reflection",
-    "workdir": "~/IdeaProjects/clvs_us-homeinspector-ai_toolshed",
+    "name": "Morning Planner",
+    "schedule": { "at": "08:30", "days": ["Mon","Tue","Wed","Thu","Fri"] },
+    "prompt_file": "~/.aeon-dispatch/prompts/morning-planner.prompt.md",
     "enabled": true
   }
 
@@ -605,14 +687,25 @@ Flow definition (JSON file in ~/.aeon-dispatch/flows/):
   {
     "name": "PR Review",
     "schedule": { "every": "30m", "active_hours": ["09:00","18:00"] },
-    "agent": "alpha-dev",
-    "prompt": "Review open PRs in API and Web repos",
-    "workdir": "~/IdeaProjects/clvs_us-homeinspector-ai_toolshed",
-    "preflight": "gh pr list --repo MyOrg/my-repo --json number --jq 'length > 0'",
+    "prompt": "Check for open PRs and review them",
+    "preflight": "gh pr list --state open --json number --jq 'length > 0'",
     "enabled": true
   }
 
-Optional fields: model, preflight, prompt_file, active_hours, days
+  Manual (on-demand):
+  {
+    "name": "Git Standup",
+    "schedule": "manual",
+    "prompt": "Summarize my recent git activity across all repos",
+    "enabled": true
+  }
+
+Optional fields: model, agent, customization, preflight, prompt_file,
+                 active_hours, days, workdir
+
+Sync from a project folder:
+  dispatch sync ~/Projects/my-repo/.dispatch
+  (imports flows/, customizations/, prompts/ subdirectories)
 USAGE
 }
 
@@ -629,6 +722,7 @@ case "${1:-help}" in
   list)        cmd_list ;;
   results)     cmd_results "${2:-}" ;;
   open)        cmd_open "${2:-}" ;;
+  sync)        cmd_sync "${2:-}" ;;
   status)      cmd_status ;;
   install)     cmd_install_launchd ;;
   uninstall)   cmd_uninstall_launchd ;;

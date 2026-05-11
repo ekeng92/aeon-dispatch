@@ -1,0 +1,6 @@
+{
+  "name": "Default Copilot",
+  "description": "Standard GitHub Copilot with no specific agent or model override. A good starting point for general-purpose flows.",
+  "agent": "default",
+  "workdir": "~"
+}

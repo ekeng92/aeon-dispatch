@@ -1,0 +1,6 @@
+{
+  "name": "Git Standup",
+  "schedule": "manual",
+  "prompt": "Summarize my recent git activity across all repos in this workspace. For each repo, show: commits from the last 24 hours (author me), files changed, and any uncommitted work. Format as a clean standup update I could paste into Slack.",
+  "enabled": true
+}

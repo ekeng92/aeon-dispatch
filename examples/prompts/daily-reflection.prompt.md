@@ -4,7 +4,7 @@ End-of-day engineering reflection. Review what happened and capture insights.
 
 ## Steps
 
-1. **Review git log** for today's commits across all repos in this workspace
+1. **Review git log** for today's commits across all repos under the current directory
 2. **Summarize accomplishments**: What shipped? What moved forward?
 3. **Note blockers**: Anything that slowed you down or remains unresolved
 4. **Capture learnings**: Any patterns, pitfalls, or techniques worth remembering

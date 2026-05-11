@@ -1,6 +1,7 @@
 {
   "name": "Git Standup",
   "schedule": "manual",
-  "prompt": "Summarize my recent git activity across all repos in this workspace. For each repo, show: commits from the last 24 hours (author me), files changed, and any uncommitted work. Format as a clean standup update I could paste into Slack.",
+  "workdir": "~/Projects",
+  "prompt": "Scan all git repositories under the current directory (one level deep). For each repo that has activity, show: commits from the last 24 hours by any author, a brief summary of files changed, and any uncommitted or staged work. Skip repos with no recent activity. Format the output as a clean standup update suitable for pasting into Slack. Use repo folder names as headers.",
   "enabled": true
 }

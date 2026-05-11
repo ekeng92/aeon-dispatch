@@ -4,6 +4,7 @@
     "at": "08:30",
     "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
   },
+  "workdir": "~/Projects",
   "prompt_file": "~/.aeon-dispatch/prompts/morning-planner.prompt.md",
   "enabled": false
 }

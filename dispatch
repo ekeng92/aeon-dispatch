@@ -217,7 +217,7 @@ execute_flow() {
       return 1
     fi
     # Customization values (defaults)
-    agent=$(jq -r '.agent // "copilot"' "${cust_file}")
+    agent=$(jq -r '.agent // "default"' "${cust_file}")
     workdir=$(expand_path "$(jq -r '.workdir // "."' "${cust_file}")")
     model=$(jq -r '.model // ""' "${cust_file}")
     # Flow-level overrides (if present, they win)
@@ -229,7 +229,7 @@ execute_flow() {
     [[ -n "${flow_workdir}" && "${flow_workdir}" != "null" ]] && workdir=$(expand_path "${flow_workdir}")
     [[ -n "${flow_model}" && "${flow_model}" != "null" ]] && model="${flow_model}"
   else
-    agent=$(flow_get "${flow_file}" '.agent // "copilot"')
+    agent=$(flow_get "${flow_file}" '.agent // "default"')
     workdir=$(expand_path "$(flow_get "${flow_file}" '.workdir // "."')")
     model=$(flow_get "${flow_file}" '.model // ""')
   fi
@@ -273,7 +273,9 @@ execute_flow() {
   local raw_file="${DISPATCH_LOGS}/${flow_id}_${ts_file}.raw"
   mkdir -p "${result_dir}"
 
-  log "Running: ${BOLD}${flow_name}${NC} (agent: ${agent})"
+  local display_agent="${agent}"
+  [[ "${display_agent}" == "default" ]] && display_agent="copilot"
+  log "Running: ${BOLD}${flow_name}${NC} (agent: ${display_agent})"
 
   local start_time
   start_time=$(date +%s)
@@ -286,14 +288,14 @@ execute_flow() {
   if [[ -n "${agent}" && "${agent}" != "null" && "${agent}" != "default" ]]; then
     cmd_args+=(--agent "${agent}")
   fi
-  cmd_args+=(-p "${prompt}" --allow-all-tools --silent --no-color)
+  cmd_args+=(-p "${prompt}" --allow-all --no-ask-user --silent --no-color)
 
   # Write result header
   cat > "${result_file}" << HEADER
 # ${flow_name}
 
 > Generated: $(date "+%Y-%m-%d %H:%M %Z")
-> Flow: \`${flow_id}\` | Agent: \`${agent}\`
+> Flow: \`${flow_id}\` | Agent: \`${display_agent}\`
 
 ---
 

@@ -4,6 +4,7 @@
     "at": "16:00",
     "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
   },
+  "workdir": "~/Projects",
   "prompt_file": "~/.aeon-dispatch/prompts/daily-reflection.prompt.md",
   "enabled": false
 }

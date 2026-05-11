@@ -178,6 +178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             log("togglePanel — opening panel", category: "AppDelegate")
             positionPanelBelowStatusItem()
             panel.makeKeyAndOrderFront(nil)
+            if #available(macOS 14.0, *) {
+                NSApp.activate()
+            } else {
+                NSApp.activate(ignoringOtherApps: true)
+            }
             log("togglePanel — panel origin=\(panel.frame.origin) size=\(panel.frame.size) isVisible=\(panel.isVisible)", category: "AppDelegate")
 
             globalMonitor = NSEvent.addGlobalMonitorForEvents(

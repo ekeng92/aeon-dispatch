@@ -88,6 +88,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("applicationDidFinishLaunching", category: "AppDelegate")
 
+        // Single-instance guard: quit if another copy is already running
+        let dominated = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+        if dominated.count > 1 {
+            log("Another instance already running — terminating", category: "AppDelegate")
+            NSApp.terminate(nil)
+            return
+        }
+
         // Set up native notifications
         let center = UNUserNotificationCenter.current()
         center.delegate = self

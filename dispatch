@@ -288,7 +288,7 @@ execute_flow() {
   if [[ -n "${agent}" && "${agent}" != "null" && "${agent}" != "default" ]]; then
     cmd_args+=(--agent "${agent}")
   fi
-  cmd_args+=(-p "${prompt}" --allow-all --no-ask-user --silent --no-color)
+  cmd_args+=(--name "dispatch:${flow_id}" -p "${prompt}" --allow-all --no-ask-user --silent --no-color)
 
   # Write result header
   cat > "${result_file}" << HEADER
@@ -300,6 +300,10 @@ execute_flow() {
 ---
 
 HEADER
+
+  # Snapshot session state before execution to detect new session
+  local sessions_before
+  sessions_before=$(ls -1 "${HOME}/.copilot/session-state/" 2>/dev/null | sort)
 
   # Execute
   local exit_code=0
@@ -317,6 +321,16 @@ HEADER
     ) > "${raw_file}" 2>&1 || exit_code=$?
   fi
 
+  # Detect the session ID created by this run
+  local session_id=""
+  local sessions_after
+  sessions_after=$(ls -1 "${HOME}/.copilot/session-state/" 2>/dev/null | sort)
+  session_id=$(comm -13 <(echo "${sessions_before}") <(echo "${sessions_after}") | head -1)
+  # Fallback: check copilot log for workspace ID
+  if [[ -z "${session_id}" && -f "${log_file}" ]]; then
+    session_id=$(grep -o 'Workspace initialized: [0-9a-f-]*' "${log_file}" 2>/dev/null | tail -1 | sed 's/Workspace initialized: //')
+  fi
+
   # Append clean output to result file (strip any residual ANSI)
   sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "${raw_file}" >> "${result_file}" 2>/dev/null
   rm -f "${raw_file}"
@@ -326,10 +340,12 @@ HEADER
   end_time=$(date +%s)
   duration=$(( end_time - start_time ))
 
+  local footer_session=""
+  [[ -n "${session_id}" ]] && footer_session=" | Session: ${session_id}"
   cat >> "${result_file}" << FOOTER
 
 ---
-_aeon-dispatch v${DISPATCH_VERSION} | Flow: ${flow_id} | Duration: ${duration}s | Exit: ${exit_code}_
+_aeon-dispatch v${DISPATCH_VERSION} | Flow: ${flow_id} | Duration: ${duration}s | Exit: ${exit_code}${footer_session}_
 FOOTER
 
   # Update state
@@ -339,6 +355,7 @@ FOOTER
   if (( exit_code == 0 )); then
     log "${GREEN}Done: ${flow_name} (${duration}s)${NC}"
     log "  Result: ${result_file}"
+    [[ -n "${session_id}" ]] && log "  Session: ${session_id} (copilot --resume=${session_id})"
     notify "AEON Dispatch" "${flow_name} completed (${duration}s)"
   else
     log "${RED}Failed: ${flow_name} (exit ${exit_code})${NC}"

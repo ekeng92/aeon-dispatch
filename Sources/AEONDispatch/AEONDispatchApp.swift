@@ -244,13 +244,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         [.banner, .sound]
     }
 
-    /// Handle notification click: open the result file if one was attached
+    /// Handle notification click: resume Copilot session or open result file
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        if let filePath = userInfo["resultFilePath"] as? String {
+        if let sessionId = userInfo["sessionId"] as? String {
+            log("Notification clicked — resuming session \(sessionId.prefix(8))...", category: "AppDelegate")
+            DispatchQueue.main.async { [weak self] in
+                self?.manager.resumeCopilotSession(sessionId)
+            }
+        } else if let filePath = userInfo["resultFilePath"] as? String {
             log("Notification clicked — opening \(filePath)", category: "AppDelegate")
             DispatchQueue.main.async {
                 NSWorkspace.shared.open(URL(fileURLWithPath: filePath))

@@ -432,11 +432,15 @@ struct ContentView: View {
                             .help("Copy to clipboard")
 
                             Button(action: { manager.openResult(result) }) {
-                                Image(systemName: "arrow.up.right.square")
+                                Image(systemName: result.sessionId != nil
+                                      ? "bubble.left.and.text.bubble.right"
+                                      : "arrow.up.right.square")
                                     .font(.system(size: 9))
                             }
                             .buttonStyle(.borderless)
-                            .help("Open in editor")
+                            .help(result.sessionId != nil
+                                  ? "Resume Copilot session"
+                                  : "Open in editor")
                         }
                         .padding(.vertical, 2)
                     }

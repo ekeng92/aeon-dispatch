@@ -182,6 +182,7 @@ final class DispatchManager: ObservableObject {
         let flowId: String
         let timestamp: Date
         let filePath: String
+        let sessionId: String?
 
         var timeString: String {
             Self.formatter.string(from: timestamp)
@@ -386,7 +387,8 @@ final class DispatchManager: ObservableObject {
                     self.sendNotification(
                         title: success ? "Flow Complete" : "Flow Failed",
                         message: flow.name,
-                        resultFilePath: latestResult?.filePath
+                        resultFilePath: latestResult?.filePath,
+                        sessionId: latestResult?.sessionId
                     )
                 }
             } catch {
@@ -401,7 +403,26 @@ final class DispatchManager: ObservableObject {
     }
 
     func openResult(_ result: FlowResult) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: result.filePath))
+        if let sessionId = result.sessionId {
+            resumeCopilotSession(sessionId)
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: result.filePath))
+        }
+    }
+
+    func resumeCopilotSession(_ sessionId: String) {
+        let copilotPath = readCopilotPath()
+        guard FileManager.default.isExecutableFile(atPath: copilotPath) else {
+            addLog("Cannot resume: copilot not found")
+            return
+        }
+        addLog("Resuming session: \(sessionId.prefix(8))...")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            task.arguments = ["-a", "Terminal", copilotPath, "--args", "--resume=\(sessionId)"]
+            try? task.run()
+        }
     }
 
     func openLatestResult(for flowId: String) {
@@ -867,10 +888,12 @@ final class DispatchManager: ObservableObject {
                       let modDate = attrs[.modificationDate] as? Date,
                       modDate > cutoff else { continue }
 
+                let sessionId = Self.extractSessionId(from: filePath)
                 results.append(FlowResult(
                     flowId: dir,
                     timestamp: modDate,
-                    filePath: filePath
+                    filePath: filePath,
+                    sessionId: sessionId
                 ))
             }
         }
@@ -883,6 +906,17 @@ final class DispatchManager: ObservableObject {
     }
 
     // MARK: - Private: Dependencies & Status
+
+    private static func extractSessionId(from filePath: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: filePath),
+              let content = String(data: data, encoding: .utf8) else { return nil }
+        // Look for "Session: <uuid>" in the footer line
+        let pattern = "Session: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+              let match = regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)),
+              let range = Range(match.range(at: 1), in: content) else { return nil }
+        return String(content[range])
+    }
 
     private func checkDependencies() {
         dispatchBinAvailable = FileManager.default.isExecutableFile(atPath: dispatchBin)
@@ -1012,14 +1046,15 @@ final class DispatchManager: ObservableObject {
         }
     }
 
-    private func sendNotification(title: String, message: String, resultFilePath: String? = nil) {
+    private func sendNotification(title: String, message: String, resultFilePath: String? = nil, sessionId: String? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = message
         content.sound = .default
-        if let path = resultFilePath {
-            content.userInfo = ["resultFilePath": path]
-        }
+        var info: [String: String] = [:]
+        if let sid = sessionId { info["sessionId"] = sid }
+        if let path = resultFilePath { info["resultFilePath"] = path }
+        if !info.isEmpty { content.userInfo = info }
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
             content: content,

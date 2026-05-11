@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import UserNotifications
 
 final class DispatchManager: ObservableObject {
 
@@ -380,9 +381,12 @@ final class DispatchManager: ObservableObject {
                         self.addLog("Failed: \(flow.name) (exit \(task.terminationStatus))\(detail)")
                     }
                     self.refresh()
+                    // Find the result file that was just created
+                    let latestResult = self.recentResults.first(where: { $0.flowId == flow.fileName.replacingOccurrences(of: ".json", with: "") })
                     self.sendNotification(
                         title: success ? "Flow Complete" : "Flow Failed",
-                        message: flow.name
+                        message: flow.name,
+                        resultFilePath: latestResult?.filePath
                     )
                 }
             } catch {
@@ -1008,17 +1012,24 @@ final class DispatchManager: ObservableObject {
         }
     }
 
-    private func sendNotification(title: String, message: String) {
-        // Sanitize inputs before interpolating into AppleScript to prevent injection.
-        let safeTitle = title.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let safeMsg = message.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "display notification \"\(safeMsg)\" with title \"\(safeTitle)\" sound name \"Glass\""
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        try? task.run()
+    private func sendNotification(title: String, message: String, resultFilePath: String? = nil) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = message
+        content.sound = .default
+        if let path = resultFilePath {
+            content.userInfo = ["resultFilePath": path]
+        }
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                log("Notification error: \(error)", category: "DispatchManager")
+            }
+        }
     }
 }
 

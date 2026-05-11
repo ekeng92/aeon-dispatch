@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import UserNotifications
 
 // MARK: - Debug Logger
 
@@ -66,7 +67,7 @@ final class WindowManager {
 
 // MARK: - App Delegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private var panel: NSPanel!
     private let manager = DispatchManager()
@@ -76,6 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("applicationDidFinishLaunching", category: "AppDelegate")
+
+        // Set up native notifications
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            log("Notification auth: granted=\(granted) error=\(String(describing: error))", category: "AppDelegate")
+        }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
@@ -223,5 +232,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.orderOut(nil)
         if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
         if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    /// Show notifications even when the app is in the foreground
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    /// Handle notification click: open the result file if one was attached
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let userInfo = response.notification.request.content.userInfo
+        if let filePath = userInfo["resultFilePath"] as? String {
+            log("Notification clicked — opening \(filePath)", category: "AppDelegate")
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(URL(fileURLWithPath: filePath))
+            }
+        }
     }
 }

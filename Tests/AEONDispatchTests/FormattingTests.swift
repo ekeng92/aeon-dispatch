@@ -121,7 +121,11 @@ final class FormattingTests: XCTestCase {
     }
 
     func test_slugify_multipleSpaces() {
-        // Multiple spaces each become a hyphen
-        XCTAssertEqual(slugify("a  b"), "a--b")
+        // Multiple spaces should collapse to a single hyphen
+        XCTAssertEqual(slugify("a  b"), "a-b")
+    }
+
+    func test_slugify_leadingTrailingSpaces() {
+        XCTAssertEqual(slugify(" hello world "), "hello-world")
     }
 }

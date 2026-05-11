@@ -692,7 +692,12 @@ struct ContentView: View {
         let logPath = manager.flowLogPath(for: flow.fileName)
         // Ensure the log file exists so tail doesn't error immediately
         FileManager.default.createFile(atPath: logPath, contents: nil)
-        let script = "tell application \"Terminal\" to do script \"echo 'AEON Dispatch — \(flow.name)'; tail -f \\\"\(logPath)\\\"\""
+        // Sanitize flow name to prevent AppleScript injection
+        let safeName = flow.name
+            .replacingOccurrences(of: "\\", with: "")
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+        let script = "tell application \"Terminal\" to do script \"echo 'AEON Dispatch — \(safeName)'; tail -f \\\"\(logPath)\\\"\""
         var error: NSDictionary?
         NSAppleScript(source: script)?.executeAndReturnError(&error)
     }

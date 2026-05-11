@@ -165,6 +165,22 @@ make run      # Build and open
 make clean    # Remove build artifacts
 ```
 
+### Running Tests
+
+Tests require **Xcode** (not just CommandLineTools). With Xcode installed:
+
+```bash
+xcodebuild test -scheme AEONDispatch -destination "platform=macOS"
+```
+
+## Security Model
+
+Flows and customizations are JSON files stored in `~/.aeon-dispatch/`. They are treated as **user-authored, trusted configuration**. Flows can specify preflight shell commands and prompts that execute with your user privileges.
+
+**Do not import flows from untrusted sources.** The `dispatch sync` command copies files without sandboxing. Review any shared flow definitions before importing them, especially those with `preflight` commands.
+
+Updates are fetched from this GitHub repository and compiled from source on your machine. The update mechanism does not verify cryptographic signatures.
+
 ## Architecture
 
 ```

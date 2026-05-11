@@ -41,4 +41,5 @@ func slugify(_ name: String) -> String {
     name.lowercased()
         .replacingOccurrences(of: " ", with: "-")
         .replacingOccurrences(of: "[^a-z0-9\\-]", with: "", options: .regularExpression)
+        .replacingOccurrences(of: "-{2,}", with: "-", options: .regularExpression)
 }
